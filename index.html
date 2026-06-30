@@ -30,6 +30,7 @@
     background:#fff;
     padding:1rem 1.1rem;
   }
+  .mini{border:1px solid #e5e7eb;border-radius:8px;background:#fff;padding:.7rem .85rem;}
   .metric-card .value{font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
   .alert{background:#fef2f2;border-color:#fecaca;color:#991b1b;}
   .ok{background:#f0fdf4;border-color:#bbf7d0;color:#166534;}
@@ -128,7 +129,7 @@
           <div class="input-row">
             <div>
               <label>Initial LSR (%)</label>
-              <span class="hint">Starting leverage. At t=0, simulator borrows margin and buys more Maybank to reach this LSR. After that, no rebalancing — LSR drifts naturally.</span>
+              <span class="hint">Starting leverage. At t=0, simulator borrows margin and buys more Maybank to reach this LSR. After that, no rebalancing — LSR drifts naturally. Restart cycles re-lever back to this same LSR.</span>
             </div>
             <input type="number" id="reinvestLsr" value="40" step="1">
           </div>
@@ -164,7 +165,7 @@
 
       <!-- Headline result -->
       <div id="headline" class="card border-l-4 border-l-blue-600">
-        <div class="text-xs uppercase tracking-wider text-gray-500 font-semibold">Result</div>
+        <div class="text-xs uppercase tracking-wider text-gray-500 font-semibold">Result · hold (no restart)</div>
         <div id="headlineText" class="text-lg font-medium mt-1.5 text-gray-900">Run the simulation to see when LSR hits 60%.</div>
       </div>
 
@@ -224,6 +225,55 @@
         </div>
       </div>
 
+      <!-- ============ RESTART STRATEGY ANALYSIS ============ -->
+      <div class="card border-l-4 border-l-purple-600">
+        <div class="flex items-baseline justify-between mb-1 flex-wrap gap-1">
+          <h3 class="font-semibold text-base flex items-center gap-2">♻️ Restart Strategy</h3>
+          <span class="text-xs text-gray-500">Sell-all → repay loan → re-lever to initial LSR, each time LSR hits 60%</span>
+        </div>
+        <p class="text-xs text-gray-500 mb-3 leading-relaxed">
+          Instead of just holding when LSR hits 60%, you liquidate everything, clear the margin loan, and restart the whole
+          buy-borrow-die with your remaining net equity as fresh capital at the same initial LSR. Your monthly cash-out keeps
+          growing with inflation across the whole timeline (living costs don't reset). Question: does equity compound upward,
+          or grind down to zero?
+        </p>
+
+        <div id="restartHeadline" class="rounded-lg p-3 mb-4 text-sm font-medium border">Run the simulation.</div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+          <div class="mini">
+            <div class="text-xs uppercase tracking-wider text-gray-500">Equity hits zero?</div>
+            <div class="value text-2xl font-bold mt-1" id="restartDeath">—</div>
+          </div>
+          <div class="mini">
+            <div class="text-xs uppercase tracking-wider text-gray-500">Restart cycles in 60y</div>
+            <div class="value text-2xl font-bold mt-1" id="restartCycles">—</div>
+          </div>
+          <div class="mini">
+            <div class="text-xs uppercase tracking-wider text-gray-500">Equity at last restart</div>
+            <div class="value text-2xl font-bold mt-1" id="restartLastEquity">—</div>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-left">
+                <th class="px-2 py-1.5">Cycle</th>
+                <th class="px-2 py-1.5 text-right">Restart at year</th>
+                <th class="px-2 py-1.5 text-right">Cycle length</th>
+                <th class="px-2 py-1.5 text-right">Capital at start</th>
+                <th class="px-2 py-1.5 text-right">Net equity at next trigger</th>
+                <th class="px-2 py-1.5 text-right">Δ vs prev restart</th>
+                <th class="px-2 py-1.5 text-right">Cash-out at trigger</th>
+              </tr>
+            </thead>
+            <tbody id="restartTable"></tbody>
+          </table>
+        </div>
+        <p class="text-xs text-gray-400 mt-2 leading-relaxed" id="restartNote"></p>
+      </div>
+
       <!-- Notes -->
       <div class="card text-xs text-gray-600 leading-relaxed">
         <h3 class="font-semibold text-sm text-gray-800 mb-2">Model assumptions &amp; caveats</h3>
@@ -235,7 +285,8 @@
           <li>When dividend &gt; cash-out + interest, surplus reinvests into Maybank (cash purchase, no new leverage).</li>
           <li>Bank's Share Value (BSV) is assumed = market value (no haircut). Real Maybank haircut is typically 5–10%.</li>
           <li>Simulation horizon: 60 years. Stops early if net equity ≤ 0.</li>
-          <li>Tax not modelled. Single-counter exposure / counter spread limits not modelled.</li>
+          <li><strong>Restart strategy assumptions:</strong> assumes you sell ALL shares at the prevailing (non-crashed) price, fully repay the loan, and immediately re-buy at the same price — ignoring brokerage, stamp duty, bid-ask spread, and any market-timing gap. It also assumes the 60% trigger is reached in calm markets, not during the crash scenarios shown in the table on the right. If the 60% is hit because of a crash, selling locks in the loss and the picture is far worse.</li>
+          <li>Tax not modelled. (Malaysian individuals generally pay no capital gains tax on shares, but each liquidate-and-rebuy still incurs brokerage + stamp duty in reality.)</li>
         </ul>
       </div>
 
@@ -307,6 +358,87 @@ function simulate(p){
   }
 
   return {series, triggerMonth};
+}
+
+// ============ RESTART STRATEGY ============
+// Loop cycles. Each time LSR hits 60%, liquidate all shares, repay the loan,
+// and restart with the remaining net equity as new capital, re-levering to the
+// same initial LSR. Cash-out keeps inflating across the GLOBAL timeline.
+function simulateRestart(p){
+  const months   = 60 * 12;
+  const r_growth = p.cagr / 12;
+  const r_div    = p.divYield / 12;
+  const r_int    = p.marginRate / 12;
+  const r_inf    = p.inflation / 12;
+  const T        = p.reinvestLsr;
+
+  let capital  = p.startingCapital;
+  let mGlobal  = 0;
+  const cycles = [];
+  let deathMonth = null;
+  let cycleNum = 0;
+
+  while(mGlobal < months){
+    cycleNum++;
+    // Re-lever to initial LSR with current equity as capital
+    let sharesValue = capital;
+    let loan = 0;
+    if(T > 0 && T < 1){
+      const B = T * sharesValue / (1 - T);   // since loan starts at 0
+      if(B > 0){ loan += B; sharesValue += B; }
+    }
+
+    const cycleStartMonth = mGlobal;
+    const startCapital    = capital;
+    let triggered  = false;
+    let endEquity  = null;
+    let endCashout = null;
+
+    while(mGlobal < months){
+      mGlobal++;
+      sharesValue *= (1 + r_growth);
+      const cashoutM = p.monthlyCashout * Math.pow(1 + r_inf, mGlobal - 1);
+      const divM = sharesValue * r_div;
+      const intM = loan * r_int;
+      const ncf = divM - intM - cashoutM;
+
+      if(ncf < 0){ loan += Math.abs(ncf); } else { sharesValue += ncf; }
+
+      const netEquity = sharesValue - loan;
+      const lsr = sharesValue > 0 ? loan / sharesValue : 0;
+
+      // keep the latest snapshot so a cycle that survives to the horizon
+      // reports its actual (still-growing) equity, not the starting capital
+      endEquity = netEquity; endCashout = cashoutM;
+
+      if(netEquity <= 0){
+        deathMonth = mGlobal;
+        break;
+      }
+      if(lsr >= 0.60){
+        triggered = true;
+        break;
+      }
+    }
+
+    cycles.push({
+      cycleNum,
+      startMonth: cycleStartMonth,
+      endMonth: mGlobal,
+      durationMonths: mGlobal - cycleStartMonth,
+      startCapital,
+      endEquity,
+      endCashout,
+      triggered,
+      reachedHorizon: (!triggered && deathMonth === null)
+    });
+
+    if(deathMonth !== null) break;
+    if(!triggered) break;        // survived to horizon without re-triggering
+    capital = endEquity;         // restart with remaining equity
+  }
+
+  return { cycles, deathMonth };
 }
 
 function parseRM(str){
@@ -393,6 +525,7 @@ function runSim(){
 
   drawTable(series, p);
   document.getElementById('crashHeaderHint').textContent = `Right side: if -${(p.crashPct*100).toFixed(0)}% crash hits THAT year`;
+  drawRestart(p);
 }
 
 function drawTable(series, p){
@@ -453,6 +586,82 @@ function renderRow(tbody, year, snap, p){
     <td class="px-2 py-1.5 text-right">${cashCallStr}</td>
   `;
   tbody.appendChild(tr);
+}
+
+function drawRestart(p){
+  const { cycles, deathMonth } = simulateRestart(p);
+  const head    = document.getElementById('restartHeadline');
+  const elDeath = document.getElementById('restartDeath');
+  const elCyc   = document.getElementById('restartCycles');
+  const elLast  = document.getElementById('restartLastEquity');
+  const tbody   = document.getElementById('restartTable');
+  const note    = document.getElementById('restartNote');
+  tbody.innerHTML = '';
+
+  const completed = cycles.filter(c => c.triggered).length;
+  elCyc.textContent = completed;
+
+  const lastCycle   = cycles[cycles.length - 1];
+  const firstCap    = cycles.length ? cycles[0].startCapital : 0;
+  const lastEqVal   = lastCycle ? (lastCycle.endEquity != null ? lastCycle.endEquity : lastCycle.startCapital) : 0;
+  elLast.textContent = fmtRM(Math.max(0, lastEqVal));
+
+  if(deathMonth){
+    const y = (deathMonth/12).toFixed(1);
+    head.className = 'rounded-lg p-3 mb-4 text-sm font-medium border alert';
+    head.innerHTML = `❌ Even with restarting, net equity is driven to <span class="font-bold">ZERO at Year ${y}</span> (during cycle ${cycles.length}). Selling and re-levering delays the end but does not prevent it here — each restart lands on a smaller base while inflation-grown cash-out keeps rising, so the cycles get shorter and shorter: a death spiral.`;
+    elDeath.textContent = `Yes · Y${y}`;
+    elDeath.className = 'value text-2xl font-bold mt-1 text-red-700';
+  } else if(completed === 0){
+    head.className = 'rounded-lg p-3 mb-4 text-sm font-medium border ok';
+    head.innerHTML = `✅ LSR never even reached 60% within 60 years, so <span class="font-bold">no restart was ever needed</span>. Held straight through, equity grew from ${fmtRM(firstCap)} to ${fmtRM(Math.max(0,lastEqVal))}.`;
+    elDeath.textContent = 'No (60y)';
+    elDeath.className = 'value text-2xl font-bold mt-1 text-green-700';
+  } else {
+    const trendUp = lastEqVal >= firstCap;
+    head.className = 'rounded-lg p-3 mb-4 text-sm font-medium border ' + (trendUp ? 'ok' : 'warn');
+    head.innerHTML = `${trendUp ? '✅' : '⚠️'} Restarting keeps you alive for 60 years across <span class="font-bold">${completed} restart(s)</span> — net equity never hits zero. Restart capital is <span class="font-bold">${trendUp ? 'trending UP (compounding)' : 'trending DOWN'}</span>: first restart base ${fmtRM(firstCap)}, latest ${fmtRM(Math.max(0,lastEqVal))}.${trendUp ? '' : ' The trend is downward — on a longer horizon this could still deplete. Watch the Δ column.'}`;
+    elDeath.textContent = 'No (60y)';
+    elDeath.className = 'value text-2xl font-bold mt-1 ' + (trendUp ? 'text-green-700' : 'text-amber-700');
+  }
+
+  let prevEnd = null;
+  cycles.forEach((c, idx) => {
+    const restartYr = (c.startMonth/12).toFixed(1);
+    const lenYr = (c.durationMonths/12).toFixed(1);
+
+    let deltaStr = '<span class="text-gray-400">—</span>';
+    if(prevEnd !== null && c.endEquity != null){
+      const d = c.endEquity - prevEnd;
+      const cls = d >= 0 ? 'text-green-700' : 'text-red-700';
+      deltaStr = `<span class="${cls}">${(d>=0?'+':'')}${fmtRM(d)}</span>`;
+    }
+
+    let endStr;
+    if(c.triggered){
+      endStr = fmtRM(c.endEquity);
+    } else if(deathMonth && idx === cycles.length - 1){
+      endStr = '<span class="text-red-700 font-semibold">ZERO</span>';
+    } else {
+      endStr = `${fmtRM(c.endEquity != null ? c.endEquity : c.startCapital)} <span class="text-green-700 text-[10px]">(survived 60y)</span>`;
+    }
+
+    const tr = document.createElement('tr');
+    tr.className = 'border-t border-gray-100';
+    tr.innerHTML = `
+      <td class="px-2 py-1.5 font-medium">#${c.cycleNum}</td>
+      <td class="px-2 py-1.5 text-right">Y${restartYr}</td>
+      <td class="px-2 py-1.5 text-right">${lenYr} y</td>
+      <td class="px-2 py-1.5 text-right">${fmtRM(c.startCapital)}</td>
+      <td class="px-2 py-1.5 text-right font-medium">${endStr}</td>
+      <td class="px-2 py-1.5 text-right">${deltaStr}</td>
+      <td class="px-2 py-1.5 text-right">${c.endCashout != null ? fmtRM(c.endCashout) : '—'}</td>
+    `;
+    tbody.appendChild(tr);
+    if(c.endEquity != null) prevEnd = c.endEquity;
+  });
+
+  note.textContent = 'Δ vs prev restart = how much more (or less) net equity you walk away with at this trigger compared with the previous one. A consistently negative Δ means each restart leaves you poorer — the strategy is slowly bleeding out even though no single cycle hits zero within 60 years.';
 }
 
 window.addEventListener('DOMContentLoaded', () => {
