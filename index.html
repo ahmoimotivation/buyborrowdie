@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Buy-Borrow-Die Stress Tester · Maybank × Public Bank SMF</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;
+    background:#ffffff;
+    color:#111827;
+  }
+  .input-row{display:grid;grid-template-columns:1fr 130px;gap:.75rem;align-items:center;}
+  .input-row label{font-size:.875rem;color:#374151;}
+  .input-row .hint{font-size:.7rem;color:#9ca3af;margin-top:2px;display:block;}
+  .input-row input{
+    text-align:right;
+    padding:.45rem .65rem;
+    border:1px solid #d1d5db;
+    border-radius:6px;
+    background:#fff;
+    font-variant-numeric:tabular-nums;
+    width:100%;
+  }
+  .input-row input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15);}
+  .card{
+    border:1px solid #e5e7eb;
+    border-radius:10px;
+    background:#fff;
+    padding:1rem 1.1rem;
+  }
+  .metric-card .value{font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+  .alert{background:#fef2f2;border-color:#fecaca;color:#991b1b;}
+  .ok{background:#f0fdf4;border-color:#bbf7d0;color:#166534;}
+  .warn{background:#fffbeb;border-color:#fde68a;color:#92400e;}
+  table{font-variant-numeric:tabular-nums;}
+  thead th{font-weight:600;color:#374151;background:#f9fafb;}
+  tbody tr:hover{background:#f9fafb;}
+  .pill{font-size:.7rem;padding:2px 8px;border-radius:999px;font-weight:500;}
+  details summary{cursor:pointer;}
+  details[open] summary{margin-bottom:.5rem;}
+  .num{font-variant-numeric:tabular-nums;}
+  .btn-primary{
+    background:#111827;color:#fff;padding:.55rem 1.1rem;border-radius:8px;
+    font-weight:500;font-size:.9rem;transition:background .15s;
+  }
+  .btn-primary:hover{background:#1f2937;}
+</style>
+</head>
+<body>
+
+<div class="max-w-7xl mx-auto px-6 py-8">
+
+  <!-- HEADER -->
+  <header class="mb-8 border-b border-gray-200 pb-5">
+    <div class="flex items-baseline justify-between flex-wrap gap-2">
+      <div>
+        <h1 class="text-2xl md:text-3xl font-bold tracking-tight">Buy-Borrow-Die Stress Tester</h1>
+        <p class="text-gray-600 text-sm mt-1">Maybank holdings · Public Bank Share Margin Facility (SMF)</p>
+      </div>
+      <div class="text-xs text-gray-500">
+        LSR formula per PB PDS Ver 03/2026 — baseline 60%, margin call 70%, force-sell 80%
+      </div>
+    </div>
+  </header>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- ============== INPUT PANEL ============== -->
+    <aside class="lg:col-span-1 space-y-5">
+
+      <div class="card">
+        <h2 class="font-semibold text-base mb-4 flex items-center gap-2">
+          <span class="inline-block w-1 h-4 bg-blue-600 rounded"></span>
+          Inputs
+        </h2>
+        <div class="space-y-3.5">
+
+          <div class="input-row">
+            <div>
+              <label>Starting capital (RM)</label>
+              <span class="hint">Cash invested into Maybank at t=0. Loan starts at 0.</span>
+            </div>
+            <input type="text" inputmode="numeric" id="startingCapital" value="800,000" class="rm-input">
+          </div>
+
+          <div class="input-row">
+            <div>
+              <label>Dividend yield (%)</label>
+              <span class="hint">Maybank historical ≈ 5–6%</span>
+            </div>
+            <input type="number" id="divYield" value="6" step="0.1">
+          </div>
+
+          <div class="input-row">
+            <div>
+              <label>Stock price CAGR (%)</label>
+              <span class="hint">Maybank price-only growth (excl. dividends)</span>
+            </div>
+            <input type="number" id="cagr" value="4" step="0.1">
+          </div>
+
+          <div class="input-row">
+            <div>
+              <label>Inflation (%)</label>
+              <span class="hint">Applied to monthly cash-out</span>
+            </div>
+            <input type="number" id="inflation" value="3" step="0.1">
+          </div>
+
+          <div class="input-row">
+            <div>
+              <label>Margin interest (%)</label>
+              <span class="hint">PBS individual: SBR + 1.97% ≈ 5.5%</span>
+            </div>
+            <input type="number" id="marginRate" value="4.72" step="0.01">
+          </div>
+
+          <div class="input-row">
+            <div>
+              <label>Monthly cash-out (RM)</label>
+              <span class="hint">Living expense at t=0 (grows w/ inflation)</span>
+            </div>
+            <input type="text" inputmode="numeric" id="monthlyCashout" value="8,000" class="rm-input">
+          </div>
+
+          <div class="input-row">
+            <div>
+              <label>Initial LSR (%)</label>
+              <span class="hint">Starting leverage. At t=0, simulator borrows margin and buys more Maybank to reach this LSR. After that, no rebalancing — LSR drifts naturally.</span>
+            </div>
+            <input type="number" id="reinvestLsr" value="40" step="1">
+          </div>
+
+          <div class="input-row pt-2 mt-1 border-t border-gray-100">
+            <div>
+              <label>Crash magnitude (%)</label>
+              <span class="hint">Stress test: % drop in Maybank price</span>
+            </div>
+            <input type="number" id="crashPct" value="40" step="5">
+          </div>
+
+        </div>
+
+        <button onclick="runSim()" class="btn-primary w-full mt-5">Run Simulation</button>
+      </div>
+
+      <!-- PB rules quick ref -->
+      <div class="card text-xs text-gray-600 leading-relaxed">
+        <h3 class="font-semibold text-sm text-gray-800 mb-2">PB SMF rule reminder</h3>
+        <div class="space-y-1.5">
+          <div class="flex justify-between"><span>Baseline LSR</span><span class="font-medium">60%</span></div>
+          <div class="flex justify-between text-amber-700"><span>Margin Call</span><span class="font-medium">≥ 70%</span></div>
+          <div class="flex justify-between text-red-700"><span>Force-Sell</span><span class="font-medium">≥ 80%</span></div>
+          <div class="text-gray-500 pt-1.5 border-t mt-2">LSR = (Loan − FD) / Bank's value of shares</div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- ============== OUTPUT PANEL ============== -->
+    <main class="lg:col-span-2 space-y-5">
+
+      <!-- Headline result -->
+      <div id="headline" class="card border-l-4 border-l-blue-600">
+        <div class="text-xs uppercase tracking-wider text-gray-500 font-semibold">Result</div>
+        <div id="headlineText" class="text-lg font-medium mt-1.5 text-gray-900">Run the simulation to see when LSR hits 60%.</div>
+      </div>
+
+      <!-- KPI cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="metric-card card">
+          <div class="text-xs uppercase tracking-wider text-gray-500">Year LSR hits 60%</div>
+          <div class="value text-3xl font-bold mt-1.5" id="kpiYear">—</div>
+          <div class="text-xs text-gray-500 mt-1" id="kpiYearSub">months from start</div>
+        </div>
+        <div class="metric-card card">
+          <div class="text-xs uppercase tracking-wider text-gray-500">Net equity at that point</div>
+          <div class="value text-3xl font-bold mt-1.5" id="kpiEquity">—</div>
+          <div class="text-xs text-gray-500 mt-1">Shares value − Loan</div>
+        </div>
+        <div class="metric-card card">
+          <div class="text-xs uppercase tracking-wider text-gray-500">Max monthly cash-out</div>
+          <div class="value text-3xl font-bold mt-1.5" id="kpiCashout">—</div>
+          <div class="text-xs text-gray-500 mt-1">In nominal RM at trigger month</div>
+        </div>
+      </div>
+
+      <!-- Combined Yearly + Crash Stress table -->
+      <div class="card">
+        <div class="flex items-baseline justify-between mb-3">
+          <h3 class="font-semibold text-sm">Year-by-year breakdown <span class="text-gray-500 font-normal">+ crash stress per year</span></h3>
+          <span class="text-xs text-gray-500" id="crashHeaderHint">Right side: if -40% crash hits THAT year</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-left">
+                <th class="px-2 py-1.5">Year</th>
+                <th class="px-2 py-1.5 text-right">Asset (Maybank)</th>
+                <th class="px-2 py-1.5 text-right">Margin loan</th>
+                <th class="px-2 py-1.5 text-right">Net equity</th>
+                <th class="px-2 py-1.5 text-right">Monthly cash-out</th>
+                <th class="px-2 py-1.5 text-right">LSR</th>
+                <th class="px-2 py-1.5 text-right border-l-2 border-red-200 pl-3" colspan="3">
+                  <span class="text-red-700">↓ if -40% crash this year ↓</span>
+                </th>
+              </tr>
+              <tr class="text-left">
+                <th class="px-2 py-1 text-gray-500"></th>
+                <th class="px-2 py-1 text-gray-500"></th>
+                <th class="px-2 py-1 text-gray-500"></th>
+                <th class="px-2 py-1 text-gray-500"></th>
+                <th class="px-2 py-1 text-gray-500"></th>
+                <th class="px-2 py-1 text-gray-500"></th>
+                <th class="px-2 py-1 text-right border-l-2 border-red-200 pl-3 text-gray-500 font-normal">Post-crash LSR</th>
+                <th class="px-2 py-1 text-left text-gray-500 font-normal">Status</th>
+                <th class="px-2 py-1 text-right text-gray-500 font-normal">Cash to avoid margin call</th>
+              </tr>
+            </thead>
+            <tbody id="yearlyTable"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Notes -->
+      <div class="card text-xs text-gray-600 leading-relaxed">
+        <h3 class="font-semibold text-sm text-gray-800 mb-2">Model assumptions &amp; caveats</h3>
+        <ul class="list-disc ml-5 space-y-1">
+          <li>Monthly resolution. Stock price compounds at CAGR/12; interest compounds monthly on outstanding loan.</li>
+          <li><strong>At t=0 only:</strong> simulator borrows margin and buys extra Maybank to reach the Initial LSR. After that, leverage is left alone.</li>
+          <li><strong>Each month:</strong> LSR drifts naturally — stock appreciation pushes it down, cashout shortfall pushes it up. No automatic rebalancing.</li>
+          <li>When dividend &lt; cash-out + interest, the shortfall is borrowed from margin (loan↑).</li>
+          <li>When dividend &gt; cash-out + interest, surplus reinvests into Maybank (cash purchase, no new leverage).</li>
+          <li>Bank's Share Value (BSV) is assumed = market value (no haircut). Real Maybank haircut is typically 5–10%.</li>
+          <li>Simulation horizon: 60 years. Stops early if net equity ≤ 0.</li>
+          <li>Tax not modelled. Single-counter exposure / counter spread limits not modelled.</li>
+        </ul>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="mt-10 pt-5 border-t border-gray-200 text-xs text-gray-500">
+    For personal stress-testing only. Not financial advice. Source: PB ShareLink PDS Ver 03/2026.
+  </footer>
+</div>
+
+<script>
+function fmtRM(n){
+  if(!isFinite(n)) return '—';
+  const sign = n < 0 ? '-' : '';
+  return sign + 'RM ' + Math.round(Math.abs(n)).toLocaleString('en-US');
+}
+function fmtRMShort(n){
+  if(!isFinite(n)) return '—';
+  return 'RM ' + Math.round(n).toLocaleString('en-US');
+}
+function fmtPct(p){return (p*100).toFixed(1) + '%';}
+
+function simulate(p){
+  const months = 60 * 12;
+  const r_growth = p.cagr / 12;
+  const r_div    = p.divYield / 12;
+  const r_int    = p.marginRate / 12;
+  const r_inf    = p.inflation / 12;
+  const initialLsr = p.reinvestLsr;
+
+  let sharesValue = p.startingCapital;
+  let loan        = 0;
+
+  if(initialLsr > 0 && initialLsr < 1){
+    const B = (initialLsr * sharesValue - loan) / (1 - initialLsr);
+    if(B > 0){
+      loan        += B;
+      sharesValue += B;
+    }
+  }
+
+  const series = [];
+  let triggerMonth = null;
+
+  for(let m = 1; m <= months; m++){
+    sharesValue *= (1 + r_growth);
+    const cashoutM = p.monthlyCashout * Math.pow(1 + r_inf, m - 1);
+    const divM = sharesValue * r_div;
+    const intM = loan * r_int;
+    const ncf = divM - intM - cashoutM;
+
+    if(ncf < 0){
+      loan += Math.abs(ncf);
+    } else {
+      sharesValue += ncf;
+    }
+
+    const lsr = sharesValue > 0 ? loan / sharesValue : 0;
+    const netEquity = sharesValue - loan;
+
+    series.push({m, sharesValue, loan, netEquity, lsr, divM, intM, cashoutM, reBorrowM:0});
+
+    if(triggerMonth === null && lsr >= 0.60){
+      triggerMonth = m;
+    }
+
+    if(netEquity <= 0) break;
+  }
+
+  return {series, triggerMonth};
+}
+
+function parseRM(str){
+  return +(String(str).replace(/[^\d.-]/g,'')) || 0;
+}
+
+function readInputs(){
+  return {
+    startingCapital : parseRM(document.getElementById('startingCapital').value),
+    divYield        : (+document.getElementById('divYield').value) / 100,
+    cagr            : (+document.getElementById('cagr').value) / 100,
+    inflation       : (+document.getElementById('inflation').value) / 100,
+    marginRate      : (+document.getElementById('marginRate').value) / 100,
+    monthlyCashout  : parseRM(document.getElementById('monthlyCashout').value),
+    reinvestLsr     : (+document.getElementById('reinvestLsr').value) / 100,
+    crashPct        : (+document.getElementById('crashPct').value) / 100,
+  };
+}
+
+function attachRMFormatting(){
+  document.querySelectorAll('input.rm-input').forEach(el => {
+    el.addEventListener('input', e => {
+      const raw = el.value.replace(/[^\d]/g,'');
+      const num = +raw || 0;
+      const offsetFromEnd = el.value.length - el.selectionEnd;
+      el.value = num.toLocaleString('en-US');
+      const newPos = Math.max(0, el.value.length - offsetFromEnd);
+      el.setSelectionRange(newPos, newPos);
+    });
+    el.addEventListener('blur', e => {
+      const num = parseRM(el.value);
+      el.value = num.toLocaleString('en-US');
+    });
+  });
+}
+
+function crashTest(shares, loan, crashPct){
+  const sharesPost = shares * (1 - crashPct);
+  const lsrPost = sharesPost > 0 ? loan / sharesPost : Infinity;
+
+  const cashToAvoidCall = Math.max(0, loan - 0.70 * sharesPost);
+  const cashToBaseline  = Math.max(0, loan - 0.60 * sharesPost);
+
+  let status, statusClass;
+  if(lsrPost >= 0.80){ status = 'FORCE-SELL'; statusClass = 'text-red-700 font-semibold'; }
+  else if(lsrPost >= 0.70){ status = 'MARGIN CALL'; statusClass = 'text-amber-700 font-semibold'; }
+  else if(lsrPost >= 0.60){ status = 'AT LIMIT'; statusClass = 'text-orange-700 font-semibold'; }
+  else { status = 'SURVIVES'; statusClass = 'text-green-700 font-semibold'; }
+
+  return {sharesPost, lsrPost, cashToAvoidCall, cashToBaseline, status, statusClass};
+}
+
+function runSim(){
+  const p = readInputs();
+  const {series, triggerMonth} = simulate(p);
+
+  const headline = document.getElementById('headlineText');
+  const kpiYear  = document.getElementById('kpiYear');
+  const kpiYearSub = document.getElementById('kpiYearSub');
+  const kpiEquity = document.getElementById('kpiEquity');
+  const kpiCashout = document.getElementById('kpiCashout');
+  const headCard = document.getElementById('headline');
+
+  headCard.classList.remove('alert','ok','warn');
+
+  if(triggerMonth){
+    const t = series[triggerMonth - 1];
+    const years = (triggerMonth / 12).toFixed(1);
+    headline.innerHTML = `LSR hits <span class="font-bold text-red-700">60%</span> after <span class="font-bold">${years} years</span> (month ${triggerMonth}). Net equity left: <span class="font-bold">${fmtRM(t.netEquity)}</span>. Monthly cash-out by then: <span class="font-bold">${fmtRM(t.cashoutM)}</span>.`;
+    headCard.classList.add('alert');
+    kpiYear.textContent = years;
+    kpiYearSub.textContent = `${triggerMonth} months from start`;
+    kpiEquity.textContent = fmtRM(t.netEquity);
+    kpiCashout.textContent = fmtRM(t.cashoutM);
+  } else {
+    const last = series[series.length - 1];
+    headline.innerHTML = `LSR never reached 60% within 60 years. Final LSR: <span class="font-bold">${fmtPct(last.lsr)}</span>, final net equity: <span class="font-bold">${fmtRM(last.netEquity)}</span>.`;
+    headCard.classList.add('ok');
+    kpiYear.textContent = '60+';
+    kpiYearSub.textContent = 'never triggered';
+    kpiEquity.textContent = fmtRM(last.netEquity);
+    kpiCashout.textContent = fmtRM(last.cashoutM);
+  }
+
+  drawTable(series, p);
+  document.getElementById('crashHeaderHint').textContent = `Right side: if -${(p.crashPct*100).toFixed(0)}% crash hits THAT year`;
+}
+
+function drawTable(series, p){
+  const tbody = document.getElementById('yearlyTable');
+  tbody.innerHTML = '';
+
+  const initialLsr = p.reinvestLsr;
+  let initShares = p.startingCapital;
+  let initLoan   = 0;
+  if(initialLsr > 0 && initialLsr < 1){
+    const B = (initialLsr * initShares - initLoan) / (1 - initialLsr);
+    if(B > 0){ initLoan += B; initShares += B; }
+  }
+  renderRow(tbody, 0, {
+    sharesValue: initShares,
+    loan: initLoan,
+    netEquity: initShares - initLoan,
+    cashoutM: p.monthlyCashout,
+    lsr: initialLsr
+  }, p);
+
+  series.forEach(s => {
+    if(s.m % 12 === 0){
+      renderRow(tbody, s.m/12, s, p);
+    }
+  });
+  const last = series[series.length - 1];
+  if(last && last.m % 12 !== 0){
+    renderRow(tbody, (last.m/12).toFixed(1), last, p);
+  }
+}
+
+function renderRow(tbody, year, snap, p){
+  const lsrPct = snap.lsr * 100;
+  let pillCls = 'bg-green-50 text-green-700';
+  if(lsrPct >= 80) pillCls = 'bg-red-100 text-red-700';
+  else if(lsrPct >= 70) pillCls = 'bg-amber-100 text-amber-700';
+  else if(lsrPct >= 60) pillCls = 'bg-orange-100 text-orange-700';
+  else if(lsrPct >= 40) pillCls = 'bg-blue-50 text-blue-700';
+
+  const ct = crashTest(snap.sharesValue, snap.loan, p.crashPct);
+  const crashLsrStr = ct.lsrPost === Infinity ? '∞' : (ct.lsrPost*100).toFixed(1) + '%';
+  const cashCallStr = ct.cashToAvoidCall > 0
+    ? `<span class="text-amber-700 font-semibold">${fmtRM(ct.cashToAvoidCall)}</span>`
+    : `<span class="text-green-700">RM 0</span>`;
+
+  const tr = document.createElement('tr');
+  tr.className = 'border-t border-gray-100';
+  tr.innerHTML = `
+    <td class="px-2 py-1.5 font-medium">Y${year}</td>
+    <td class="px-2 py-1.5 text-right">${fmtRM(snap.sharesValue)}</td>
+    <td class="px-2 py-1.5 text-right text-red-700">${fmtRM(snap.loan)}</td>
+    <td class="px-2 py-1.5 text-right font-medium">${fmtRM(snap.netEquity)}</td>
+    <td class="px-2 py-1.5 text-right">${fmtRM(snap.cashoutM)}</td>
+    <td class="px-2 py-1.5 text-right"><span class="pill ${pillCls}">${lsrPct.toFixed(1)}%</span></td>
+    <td class="px-2 py-1.5 text-right border-l-2 border-red-200 pl-3">${crashLsrStr}</td>
+    <td class="px-2 py-1.5 ${ct.statusClass}">${ct.status}</td>
+    <td class="px-2 py-1.5 text-right">${cashCallStr}</td>
+  `;
+  tbody.appendChild(tr);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  attachRMFormatting();
+  runSim();
+});
+</script>
+
+</body>
+</html>
