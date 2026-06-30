@@ -259,8 +259,8 @@
           <table class="w-full text-xs">
             <thead>
               <tr class="text-left">
-                <th class="px-2 py-1.5">Cycle</th>
-                <th class="px-2 py-1.5 text-right">Restart at year</th>
+                <th class="px-2 py-1.5">Restart #</th>
+                <th class="px-2 py-1.5 text-right">At year (timeline)</th>
                 <th class="px-2 py-1.5 text-right">Cycle length</th>
                 <th class="px-2 py-1.5 text-right">Capital at start</th>
                 <th class="px-2 py-1.5 text-right">Net equity at next trigger</th>
@@ -361,84 +361,89 @@ function simulate(p){
 }
 
 // ============ RESTART STRATEGY ============
-// Loop cycles. Each time LSR hits 60%, liquidate all shares, repay the loan,
-// and restart with the remaining net equity as new capital, re-levering to the
-// same initial LSR. Cash-out keeps inflating across the GLOBAL timeline.
+// One "leg" = lever to the initial LSR with the given capital, then run monthly
+// until LSR hits 60% (trigger), equity hits 0 (death), or the 60y horizon.
+function runLeg(p, capital, startMonth, months, R){
+  let sharesValue = capital;
+  let loan = 0;
+  if(R.T > 0 && R.T < 1){
+    const B = R.T * sharesValue / (1 - R.T);   // loan starts at 0
+    if(B > 0){ loan += B; sharesValue += B; }
+  }
+  let m = startMonth, triggered = false, died = false;
+  let endEquity = capital, endCashout = null;
+  while(m < months){
+    m++;
+    sharesValue *= (1 + R.r_growth);
+    const cashoutM = p.monthlyCashout * Math.pow(1 + R.r_inf, m - 1);
+    const divM = sharesValue * R.r_div;
+    const intM = loan * R.r_int;
+    const ncf = divM - intM - cashoutM;
+    if(ncf < 0){ loan += Math.abs(ncf); } else { sharesValue += ncf; }
+    const netEquity = sharesValue - loan;
+    const lsr = sharesValue > 0 ? loan / sharesValue : 0;
+    endEquity = netEquity; endCashout = cashoutM;
+    if(netEquity <= 0){ died = true; break; }
+    if(lsr >= 0.60){ triggered = true; break; }
+  }
+  return { endMonth: m, endEquity, endCashout, triggered, died };
+}
+
+// Phase 1: HOLD from t=0 until LSR first hits 60% (this is the "Hold" result).
+// Phase 2: from that first-trigger point, repeatedly sell-all / repay / re-lever
+// and restart, until equity hits zero or the horizon. The RESTART CLOCK therefore
+// starts at the first 60% trigger (Restart #1 = that year). Cash-out keeps
+// inflating across the global timeline (living costs never reset).
 function simulateRestart(p){
-  const months   = 60 * 12;
-  const r_growth = p.cagr / 12;
-  const r_div    = p.divYield / 12;
-  const r_int    = p.marginRate / 12;
-  const r_inf    = p.inflation / 12;
-  const T        = p.reinvestLsr;
+  const months = 60 * 12;
+  const R = {
+    r_growth: p.cagr / 12,
+    r_div:    p.divYield / 12,
+    r_int:    p.marginRate / 12,
+    r_inf:    p.inflation / 12,
+    T:        p.reinvestLsr
+  };
 
-  let capital  = p.startingCapital;
-  let mGlobal  = 0;
-  const cycles = [];
-  let deathMonth = null;
-  let cycleNum = 0;
-
-  while(mGlobal < months){
-    cycleNum++;
-    // Re-lever to initial LSR with current equity as capital
-    let sharesValue = capital;
-    let loan = 0;
-    if(T > 0 && T < 1){
-      const B = T * sharesValue / (1 - T);   // since loan starts at 0
-      if(B > 0){ loan += B; sharesValue += B; }
-    }
-
-    const cycleStartMonth = mGlobal;
-    const startCapital    = capital;
-    let triggered  = false;
-    let endEquity  = null;
-    let endCashout = null;
-
-    while(mGlobal < months){
-      mGlobal++;
-      sharesValue *= (1 + r_growth);
-      const cashoutM = p.monthlyCashout * Math.pow(1 + r_inf, mGlobal - 1);
-      const divM = sharesValue * r_div;
-      const intM = loan * r_int;
-      const ncf = divM - intM - cashoutM;
-
-      if(ncf < 0){ loan += Math.abs(ncf); } else { sharesValue += ncf; }
-
-      const netEquity = sharesValue - loan;
-      const lsr = sharesValue > 0 ? loan / sharesValue : 0;
-
-      // keep the latest snapshot so a cycle that survives to the horizon
-      // reports its actual (still-growing) equity, not the starting capital
-      endEquity = netEquity; endCashout = cashoutM;
-
-      if(netEquity <= 0){
-        deathMonth = mGlobal;
-        break;
-      }
-      if(lsr >= 0.60){
-        triggered = true;
-        break;
-      }
-    }
-
-    cycles.push({
-      cycleNum,
-      startMonth: cycleStartMonth,
-      endMonth: mGlobal,
-      durationMonths: mGlobal - cycleStartMonth,
-      startCapital,
-      endEquity,
-      endCashout,
-      triggered,
-      reachedHorizon: (!triggered && deathMonth === null)
-    });
-
-    if(deathMonth !== null) break;
-    if(!triggered) break;        // survived to horizon without re-triggering
-    capital = endEquity;         // restart with remaining equity
+  // Phase 1 — hold leg from day 1
+  const hold = runLeg(p, p.startingCapital, 0, months, R);
+  if(!hold.triggered){
+    // Never hit 60% within 60y — no restart ever needed
+    return { restarts: [], deathMonth: hold.died ? hold.endMonth : null,
+             firstTriggerMonth: null, firstTriggerEquity: null,
+             holdFinalEquity: hold.endEquity };
   }
 
-  return { cycles, deathMonth };
+  const firstTriggerMonth  = hold.endMonth;
+  const firstTriggerEquity = hold.endEquity;
+
+  // Phase 2 — restart loop, starting AT the first trigger
+  const restarts = [];
+  let deathMonth = null;
+  let capital = firstTriggerEquity;
+  let mGlobal = firstTriggerMonth;
+  let n = 0;
+
+  while(mGlobal < months){
+    n++;
+    const leg = runLeg(p, capital, mGlobal, months, R);
+    restarts.push({
+      n,
+      startMonth: mGlobal,
+      endMonth: leg.endMonth,
+      durationMonths: leg.endMonth - mGlobal,
+      startCapital: capital,
+      endEquity: leg.endEquity,
+      endCashout: leg.endCashout,
+      triggered: leg.triggered,
+      died: leg.died
+    });
+    if(leg.died){ deathMonth = leg.endMonth; break; }
+    if(!leg.triggered) break;          // survived to horizon without re-triggering
+    capital = leg.endEquity;           // restart with remaining equity
+    mGlobal = leg.endMonth;
+  }
+
+  return { restarts, deathMonth, firstTriggerMonth, firstTriggerEquity };
 }
 
 function parseRM(str){
@@ -589,7 +594,7 @@ function renderRow(tbody, year, snap, p){
 }
 
 function drawRestart(p){
-  const { cycles, deathMonth } = simulateRestart(p);
+  const { restarts, deathMonth, firstTriggerMonth, firstTriggerEquity, holdFinalEquity } = simulateRestart(p);
   const head    = document.getElementById('restartHeadline');
   const elDeath = document.getElementById('restartDeath');
   const elCyc   = document.getElementById('restartCycles');
@@ -598,70 +603,76 @@ function drawRestart(p){
   const note    = document.getElementById('restartNote');
   tbody.innerHTML = '';
 
-  const completed = cycles.filter(c => c.triggered).length;
-  elCyc.textContent = completed;
-
-  const lastCycle   = cycles[cycles.length - 1];
-  const firstCap    = cycles.length ? cycles[0].startCapital : 0;
-  const lastEqVal   = lastCycle ? (lastCycle.endEquity != null ? lastCycle.endEquity : lastCycle.startCapital) : 0;
-  elLast.textContent = fmtRM(Math.max(0, lastEqVal));
-
-  if(deathMonth){
-    const y = (deathMonth/12).toFixed(1);
-    head.className = 'rounded-lg p-3 mb-4 text-sm font-medium border alert';
-    head.innerHTML = `❌ Even with restarting, net equity is driven to <span class="font-bold">ZERO at Year ${y}</span> (during cycle ${cycles.length}). Selling and re-levering delays the end but does not prevent it here — each restart lands on a smaller base while inflation-grown cash-out keeps rising, so the cycles get shorter and shorter: a death spiral.`;
-    elDeath.textContent = `Yes · Y${y}`;
-    elDeath.className = 'value text-2xl font-bold mt-1 text-red-700';
-  } else if(completed === 0){
+  // Case A: never hit 60% within 60y — no restart was ever needed
+  if(firstTriggerMonth === null){
     head.className = 'rounded-lg p-3 mb-4 text-sm font-medium border ok';
-    head.innerHTML = `✅ LSR never even reached 60% within 60 years, so <span class="font-bold">no restart was ever needed</span>. Held straight through, equity grew from ${fmtRM(firstCap)} to ${fmtRM(Math.max(0,lastEqVal))}.`;
+    head.innerHTML = `✅ LSR never even reached 60% within 60 years, so <span class="font-bold">no restart was ever needed</span>. Held straight through, equity ended at ${fmtRM(Math.max(0, holdFinalEquity))}.`;
     elDeath.textContent = 'No (60y)';
     elDeath.className = 'value text-2xl font-bold mt-1 text-green-700';
+    elCyc.textContent = '0';
+    elLast.textContent = fmtRM(Math.max(0, holdFinalEquity));
+    note.textContent = '';
+    return;
+  }
+
+  const ftYear    = (firstTriggerMonth/12).toFixed(1);
+  const completed = restarts.filter(r => r.triggered).length;
+  elCyc.textContent = completed;
+
+  const lastR  = restarts[restarts.length - 1];
+  const lastEq = deathMonth ? 0 : (lastR ? lastR.endEquity : firstTriggerEquity);
+  elLast.textContent = fmtRM(Math.max(0, lastEq));
+
+  if(deathMonth){
+    const y    = (deathMonth/12).toFixed(1);
+    const span = ((deathMonth - firstTriggerMonth)/12).toFixed(1);
+    head.className = 'rounded-lg p-3 mb-4 text-sm font-medium border alert';
+    head.innerHTML = `❌ You hold until LSR first hits 60% at <span class="font-bold">Y${ftYear}</span> (net equity ${fmtRM(firstTriggerEquity)}). If you then sell → repay → restart from there, net equity is driven to <span class="font-bold">ZERO at Year ${y}</span> — only <span class="font-bold">${span} years</span> after your first restart. Each restart lands on a smaller base while inflation-grown cash-out keeps rising, so the cycles get shorter and shorter: a death spiral.`;
+    elDeath.textContent = `Yes · Y${y}`;
+    elDeath.className = 'value text-2xl font-bold mt-1 text-red-700';
   } else {
-    const trendUp = lastEqVal >= firstCap;
+    const trendUp = lastEq >= firstTriggerEquity;
     head.className = 'rounded-lg p-3 mb-4 text-sm font-medium border ' + (trendUp ? 'ok' : 'warn');
-    head.innerHTML = `${trendUp ? '✅' : '⚠️'} Restarting keeps you alive for 60 years across <span class="font-bold">${completed} restart(s)</span> — net equity never hits zero. Restart capital is <span class="font-bold">${trendUp ? 'trending UP (compounding)' : 'trending DOWN'}</span>: first restart base ${fmtRM(firstCap)}, latest ${fmtRM(Math.max(0,lastEqVal))}.${trendUp ? '' : ' The trend is downward — on a longer horizon this could still deplete. Watch the Δ column.'}`;
+    head.innerHTML = `${trendUp ? '✅' : '⚠️'} You hold until LSR first hits 60% at <span class="font-bold">Y${ftYear}</span> (${fmtRM(firstTriggerEquity)}). Restarting from there keeps you alive through 60 years across <span class="font-bold">${completed} restart(s)</span> — net equity never hits zero. Restart capital is <span class="font-bold">${trendUp ? 'trending UP (compounding)' : 'trending DOWN'}</span>: ${fmtRM(firstTriggerEquity)} → ${fmtRM(Math.max(0, lastEq))}.${trendUp ? '' : ' The trend is downward — on a longer horizon this could still deplete. Watch the Δ column.'}`;
     elDeath.textContent = 'No (60y)';
     elDeath.className = 'value text-2xl font-bold mt-1 ' + (trendUp ? 'text-green-700' : 'text-amber-700');
   }
 
-  let prevEnd = null;
-  cycles.forEach((c, idx) => {
-    const restartYr = (c.startMonth/12).toFixed(1);
-    const lenYr = (c.durationMonths/12).toFixed(1);
+  // Δ for restart #1 is measured against the equity you started restarting with
+  let prevEnd = firstTriggerEquity;
+  restarts.forEach((r, idx) => {
+    const restartYr = (r.startMonth/12).toFixed(1);
+    const lenYr = (r.durationMonths/12).toFixed(1);
 
-    let deltaStr = '<span class="text-gray-400">—</span>';
-    if(prevEnd !== null && c.endEquity != null){
-      const d = c.endEquity - prevEnd;
-      const cls = d >= 0 ? 'text-green-700' : 'text-red-700';
-      deltaStr = `<span class="${cls}">${(d>=0?'+':'')}${fmtRM(d)}</span>`;
-    }
+    const d = r.endEquity - prevEnd;
+    const dcls = d >= 0 ? 'text-green-700' : 'text-red-700';
+    const deltaStr = `<span class="${dcls}">${(d>=0?'+':'')}${fmtRM(d)}</span>`;
 
     let endStr;
-    if(c.triggered){
-      endStr = fmtRM(c.endEquity);
-    } else if(deathMonth && idx === cycles.length - 1){
+    if(r.triggered){
+      endStr = fmtRM(r.endEquity);
+    } else if(r.died){
       endStr = '<span class="text-red-700 font-semibold">ZERO</span>';
     } else {
-      endStr = `${fmtRM(c.endEquity != null ? c.endEquity : c.startCapital)} <span class="text-green-700 text-[10px]">(survived 60y)</span>`;
+      endStr = `${fmtRM(r.endEquity)} <span class="text-green-700 text-[10px]">(survived 60y)</span>`;
     }
 
     const tr = document.createElement('tr');
     tr.className = 'border-t border-gray-100';
     tr.innerHTML = `
-      <td class="px-2 py-1.5 font-medium">#${c.cycleNum}</td>
+      <td class="px-2 py-1.5 font-medium">#${r.n}</td>
       <td class="px-2 py-1.5 text-right">Y${restartYr}</td>
       <td class="px-2 py-1.5 text-right">${lenYr} y</td>
-      <td class="px-2 py-1.5 text-right">${fmtRM(c.startCapital)}</td>
+      <td class="px-2 py-1.5 text-right">${fmtRM(r.startCapital)}</td>
       <td class="px-2 py-1.5 text-right font-medium">${endStr}</td>
       <td class="px-2 py-1.5 text-right">${deltaStr}</td>
-      <td class="px-2 py-1.5 text-right">${c.endCashout != null ? fmtRM(c.endCashout) : '—'}</td>
+      <td class="px-2 py-1.5 text-right">${r.endCashout != null ? fmtRM(r.endCashout) : '—'}</td>
     `;
     tbody.appendChild(tr);
-    if(c.endEquity != null) prevEnd = c.endEquity;
+    prevEnd = r.endEquity;
   });
 
-  note.textContent = 'Δ vs prev restart = how much more (or less) net equity you walk away with at this trigger compared with the previous one. A consistently negative Δ means each restart leaves you poorer — the strategy is slowly bleeding out even though no single cycle hits zero within 60 years.';
+  note.textContent = 'Restart #1 = the moment LSR first hits 60% (the Hold result above). Years shown are on the absolute timeline. Δ = net equity gained/lost vs the previous restart; a consistently negative Δ means each restart leaves you poorer — a slow bleed-out toward zero.';
 }
 
 window.addEventListener('DOMContentLoaded', () => {
