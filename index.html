@@ -145,6 +145,8 @@
         </div>
 
         <button onclick="runSim()" class="btn-primary w-full mt-5">Run Simulation</button>
+        <button onclick="resetInputs()" class="w-full mt-2 text-xs text-gray-400 hover:text-gray-600">Reset to defaults</button>
+        <p class="text-[11px] text-gray-400 mt-2 text-center">Your inputs are saved in this browser — they'll still be here next time you open the link.</p>
       </div>
 
       <!-- PB rules quick ref -->
@@ -463,6 +465,34 @@ function readInputs(){
   };
 }
 
+// ---- Persist inputs across reloads (localStorage) ----
+const INPUT_IDS = ['startingCapital','divYield','cagr','inflation','marginRate','monthlyCashout','reinvestLsr','crashPct'];
+function saveInputs(){
+  try{
+    const data = {};
+    INPUT_IDS.forEach(id => { const el = document.getElementById(id); if(el) data[id] = el.value; });
+    localStorage.setItem('bbd_inputs_v1', JSON.stringify(data));
+  }catch(e){}
+}
+function loadInputs(){
+  try{
+    const raw = localStorage.getItem('bbd_inputs_v1');
+    if(!raw) return;
+    const data = JSON.parse(raw);
+    INPUT_IDS.forEach(id => { if(data[id] != null){ const el = document.getElementById(id); if(el) el.value = data[id]; } });
+  }catch(e){}
+}
+function resetInputs(){
+  try{ localStorage.removeItem('bbd_inputs_v1'); }catch(e){}
+  location.reload();
+}
+function attachAutosave(){
+  INPUT_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('change', saveInputs);
+  });
+}
+
 function attachRMFormatting(){
   document.querySelectorAll('input.rm-input').forEach(el => {
     el.addEventListener('input', e => {
@@ -531,6 +561,7 @@ function runSim(){
   drawTable(series, p);
   document.getElementById('crashHeaderHint').textContent = `Right side: if -${(p.crashPct*100).toFixed(0)}% crash hits THAT year`;
   drawRestart(p);
+  saveInputs();
 }
 
 function drawTable(series, p){
@@ -676,7 +707,9 @@ function drawRestart(p){
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  loadInputs();
   attachRMFormatting();
+  attachAutosave();
   runSim();
 });
 </script>
